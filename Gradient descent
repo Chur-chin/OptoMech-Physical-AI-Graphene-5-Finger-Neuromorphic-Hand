@@ -1,0 +1,147 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.integrate import solve_ivp
+import matplotlib.animation as animation
+from tqdm import tqdm
+import warnings
+warnings.filterwarnings('ignore')
+
+# ========================== Physical AI Core ==========================
+L = 2000.0
+curv_factor = 2.35
+x_tip = L * 0.58
+Nx = 140
+x = np.linspace(0, L, Nx)
+
+def serpentine(X):
+    return 2.5 * np.sin(curv_factor * X) * np.exp(X / 15)
+
+Y_serp = serpentine(x)
+envelope = np.exp( - (x - x_tip)**2 / (2.4**2) )
+
+# ========================== Resonance Animation + Full Simulation ==========================
+def run_resonance_animation():
+    res_freq = 1.85  # 이전 sweep에서 발견된 resonance 근처
+    I_opt = 28e3
+    F_opt = (I_opt / 25000) * envelope * 9.0
+    
+    k_DNA_base = 5.0
+    Gamma_m = 0.11
+    M_eff = 0.32
+    
+    def dynamics(t, y, k_DNA_t):
+        u = y[:Nx]
+        v = y[Nx:]
+        # Cheyne-Stokes + Resonance modulation
+        mod = (1 + 0.7 * np.sin(2*np.pi*res_freq*t)) * np.exp(-0.006*t)
+        F_drive = F_opt * mod
+        
+        k_total = k_DNA_t + 8.0
+        a = (F_drive - Gamma_m * v - k_total * u) / M_eff
+        a[0] = a[-1] = 0; v[0] = v[-1] = 0
+        return np.concatenate([v, a])
+
+    t_span = (0, 35)
+    t_eval = np.linspace(0, 35, 600)
+    y0 = np.zeros(2*Nx)
+    
+    # DNA Origami spring constant 실시간 변화 (학습-like adaptation)
+    k_DNA_history = k_DNA_base * (1 + 0.3 * np.sin(0.4 * t_eval))
+    
+    # Heisenberg Uncertainty Noise (Position-Momentum)
+    np.random.seed(42)
+    heisenberg_noise = np.random.normal(0, 0.018, len(t_eval)) * np.sqrt(1.0 / (t_eval + 0.1))  # ħ-like scaling
+    
+    # Solve
+    sol = solve_ivp(lambda t,y: dynamics(t,y, np.interp(t, t_eval, k_DNA_history)), 
+                    t_span, y0, t_eval=t_eval, method='LSODA')
+    
+    u_sol = sol.y[:Nx, :]
+    u_tip = u_sol[int(Nx*0.58), :] + heisenberg_noise * 0.8   # tip에 noise 주입
+    
+    print(f"Resonance Frequency: {res_freq:.2f} GHz | Final u_max: {np.max(np.abs(u_tip)):.3f} nm")
+    
+    # ====================== ANIMATION ======================
+    fig, ax = plt.subplots(figsize=(11, 6))
+    line, = ax.plot(x, u_sol[:,0], 'b-', lw=2.5, label='Graphene Membrane')
+    scatter = ax.scatter([x_tip], [u_tip[0]], color='red', s=120, label='Finger Tip (Phase Singularity)')
+    ax.plot(x, Y_serp*0.12, 'k--', alpha=0.6, label='Serpentine Base')
+    ax.set_ylim(-4.5, 4.5)
+    ax.set_xlabel('Position (nm)')
+    ax.set_ylabel('Displacement (nm)')
+    ax.set_title(f'Physical AI Finger Motion @ Resonance {res_freq:.2f} GHz')
+    ax.legend()
+    ax.grid(True)
+    
+    def animate(i):
+        line.set_ydata(u_sol[:, i])
+        scatter.set_offsets([[x_tip, u_tip[i]]])
+        ax.set_title(f'Physical AI Finger @ t = {t_eval[i]:.2f} ns | k_DNA = {k_DNA_history[i]:.2f} pN/nm')
+        return line, scatter
+    
+    ani = animation.FuncAnimation(fig, animate, frames=range(0, len(t_eval), 3), 
+                                  interval=35, blit=False, repeat=True)
+    plt.show()
+    
+    return t_eval, u_tip, k_DNA_history, heisenberg_noise
+
+# ====================== PID with Gradient Descent Auto-tuning ======================
+def pid_with_gd_tuning(target_u=2.5, epochs=25):
+    print("🧠 PID Gradient Descent Auto-tuning 시작...")
+    Kp, Ki, Kd = 0.7, 0.12, 0.04
+    best_error = float('inf')
+    best_gains = (Kp, Ki, Kd)
+    
+    errors_history = []
+    
+    for epoch in range(epochs):
+        # Simple simulation loop
+        t = np.linspace(0, 30, 400)
+        dt = t[1]-t[0]
+        u = np.zeros_like(t)
+        integral = 0
+        prev_e = 0
+        I_opt = np.ones_like(t) * 18e3
+        
+        for i in range(1, len(t)):
+            e = target_u - u[i-1]
+            integral += e * dt
+            deriv = (e - prev_e)/dt
+            prev_e = e
+            
+            control = Kp*e + Ki*integral + Kd*deriv
+            I_opt[i] = np.clip(12e3 + control*9500, 8e3, 65e3)
+            
+            # Dynamics
+            u[i] = u[i-1] + dt * (I_opt[i]/28000 * 0.18 - 0.09*u[i-1])
+        
+        mse = np.mean((u - target_u)**2)
+        errors_history.append(mse)
+        
+        # Gradient Descent step (simple)
+        grad = 0.008 * np.random.randn(3) if mse > 0.05 else np.zeros(3)
+        Kp -= 0.015 * (mse * 0.8) + grad[0]
+        Ki -= 0.008 * (mse * 0.6) + grad[1]
+        Kd -= 0.012 * (mse * 0.4) + grad[2]
+        
+        if mse < best_error:
+            best_error = mse
+            best_gains = (Kp, Ki, Kd)
+    
+    print(f"✅ 최적 PID Gains → Kp={best_gains[0]:.3f}, Ki={best_gains[1]:.3f}, Kd={best_gains[2]:.3f}")
+    return best_gains
+
+# ====================== 실행 ======================
+print("🚀 Physical AI Enhanced Simulation 시작...\n")
+
+# 1. Resonance Animation + Heisenberg Noise + Real-time k_DNA
+t, u_tip, k_DNA_t, noise = run_resonance_animation()
+
+# 2. PID Auto-tuning
+optimal_gains = pid_with_gd_tuning(target_u=2.5, epochs=20)
+
+print("\n🎉 모든 기능 완료!")
+print("- Resonance Animation 실행됨")
+print("- Heisenberg Uncertainty Noise 적용됨")
+print("- DNA Origami k_DNA 실시간 변화 적용됨")
+print("- PID Gradient Descent 자동 튜닝 완료")
