@@ -1,0 +1,90 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.integrate import solve_ivp
+
+# ========================== 최적화된 파라미터 ==========================
+L = 2000.0
+curv_factor = 2.35
+I_opt = 25e3
+k_DNA = 5.0
+k_Graphene = 8.0
+k_total = k_DNA + k_Graphene
+Gamma_m = 0.12
+M_eff = 0.35
+
+Nx = 120                    # ← 크게 줄임 (속도 대폭 향상)
+x = np.linspace(0, L, Nx)
+x_tip = L * 0.58
+
+# Serpentine
+def serpentine(X):
+    return 2.5 * np.sin(curv_factor * X) * np.exp(X / 15)
+
+Y_serp = serpentine(x)
+
+# Force profile
+envelope = np.exp( - (x - x_tip)**2 / (2.5**2) )
+phase_grad = 0.012 * (1 + np.exp( - (x - x_tip)**2 / 0.8**2 ))   # scaling 조정
+F_opt = (I_opt / 25000) * envelope * phase_grad * 8.0            # force scale
+
+# ========================== 동역학 함수 ==========================
+def physical_ai_dynamics(t, y):
+    u = y[:Nx]
+    v = y[Nx:]
+    
+    # Cheyne-Stokes-like modulation
+    mod = (1 + 0.65 * np.sin(2*np.pi*1.2*t)) * np.exp(-0.008*t)
+    F_drive = F_opt * mod
+    
+    # Stiffness + damping
+    a = (F_drive - Gamma_m * v - k_total * u) / M_eff
+    
+    # Clamped boundary
+    a[0] = a[-1] = 0
+    v[0] = v[-1] = 0
+    
+    return np.concatenate([v, a])
+
+# 초기조건
+y0 = np.zeros(2 * Nx)
+
+# 시간
+t_span = (0, 30)
+t_eval = np.linspace(0, 30, 600)
+
+print("🚀 최적화된 시뮬레이션 시작... (보통 10~40초 소요)")
+sol = solve_ivp(physical_ai_dynamics, t_span, y0, t_eval=t_eval, 
+                method='LSODA',     # Stiff solver로 변경
+                rtol=1e-5, atol=1e-8)
+
+u_sol = sol.y[:Nx, :]
+
+# ========================== 결과 ==========================
+u_max = np.max(np.abs(u_sol))
+tip_idx = int(Nx * 0.58)
+
+print(f"\n=== 시뮬레이션 완료 ===")
+print(f"최대 변위 u_max = {u_max:.4f} nm")
+print(f"손가락 끝 최대 변위 = {np.max(np.abs(u_sol[tip_idx, :])):.4f} nm")
+print(f"시뮬레이션 성공 여부: {sol.success}")
+
+# ========================== 플롯 ==========================
+fig, axs = plt.subplots(2, 1, figsize=(11, 7))
+
+axs[0].plot(x, Y_serp*0.12, 'k--', alpha=0.7, label='Serpentine base')
+axs[0].plot(x, u_sol[:, -1], 'b-', lw=2.2, label='Final deflection')
+axs[0].axvline(x_tip, color='red', ls=':', label='Finger Tip')
+axs[0].set_title('Physical AI Finger - Final Position')
+axs[0].set_xlabel('Position (nm)')
+axs[0].set_ylabel('Displacement (nm)')
+axs[0].legend()
+axs[0].grid(True)
+
+axs[1].plot(t_eval, u_sol[tip_idx, :], 'r-', lw=2)
+axs[1].set_title('Finger Tip Dynamic Motion (Time Response)')
+axs[1].set_xlabel('Time (ns)')
+axs[1].set_ylabel('Displacement (nm)')
+axs[1].grid(True)
+
+plt.tight_layout()
+plt.show()
