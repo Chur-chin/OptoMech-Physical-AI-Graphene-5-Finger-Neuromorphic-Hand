@@ -1,0 +1,115 @@
+"""
+OptoMech-Physical-AI: Graphene 5-Finger Neuromorphic Hand
+Author: [Your Name]
+"""
+
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.integrate import solve_ivp
+import matplotlib.animation as animation
+
+# ========================== Parameters ==========================
+L = 3500.0
+Nx = 200
+x = np.linspace(0, L, Nx)
+
+def serpentine(X):
+    return 2.3 * np.sin(2.35 * X) * np.exp(X / 20)
+
+Y_serp = serpentine(x)
+
+# Finger positions
+finger_pos = [L*0.22, L*0.42, L*0.58, L*0.73, L*0.88]
+finger_names = ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky']
+colors = ['#e74c3c', '#3498db', '#2ecc71', '#f1c40f', '#9b59b6']
+
+def get_envelope(x, center, width=2.3):
+    return np.exp(-(x - center)**2 / width**2)
+
+# ========================== Simulation ==========================
+def run_5finger_hand(I_base=29e3, t_max=38):
+    base_freqs = [1.85, 1.92, 1.78, 1.95, 1.68]
+    
+    F_opt = np.zeros(Nx)
+    for center in finger_pos:
+        F_opt += (I_base / 25000) * get_envelope(x, center) * 7.5
+
+    def dynamics(t, y):
+        u = y[:Nx]
+        v = y[Nx:]
+        
+        # Independent frequency control per finger
+        mod = np.zeros(Nx)
+        for i, fpos in enumerate(finger_pos):
+            idx = int(fpos / L * Nx)
+            freq = base_freqs[i]
+            phase = i * 0.6
+            mod[idx-8:idx+9] += (1 + 0.75 * np.sin(2*np.pi*freq*t + phase))
+        
+        F_drive = F_opt * (mod / 3) * (1 + 0.25 * np.sin(0.8 * t))
+        
+        # Object grasp interaction
+        object_pos = L * 0.65
+        contact = np.exp(-(x - object_pos)**2 / 80)
+        reaction_force = -12.0 * u * contact
+        
+        k_total = 5.2 * (1 + 0.3 * np.sin(0.6*t)) + 8.5
+        a = (F_drive + reaction_force - 0.095 * v - k_total * u) / 0.40
+        
+        a[0] = a[-1] = 0
+        v[0] = v[-1] = 0
+        return np.concatenate([v, a])
+
+    y0 = np.zeros(2 * Nx)
+    t_eval = np.linspace(0, t_max, 800)
+    
+    # Heisenberg Uncertainty Noise
+    np.random.seed(42)
+    noise = np.random.normal(0, 0.018, len(t_eval)) * (1.0 / np.sqrt(t_eval + 0.3))
+    
+    sol = solve_ivp(dynamics, (0, t_max), y0, t_eval=t_eval, method='LSODA', rtol=1e-5)
+    u_sol = sol.y[:Nx, :]
+    
+    u_tips = [u_sol[int(pos / L * Nx), :] + noise * 0.8 for pos in finger_pos]
+    
+    return t_eval, u_sol, u_tips
+
+# ========================== Run & Animate ==========================
+if __name__ == "__main__":
+    print("🖐️ Initializing 5-Finger Physical AI Hand...")
+    t_eval, u_sol, u_tips = run_5finger_hand(I_base=29e3, t_max=38)
+
+    fig, ax = plt.subplots(figsize=(14, 8))
+    ax.plot(x, Y_serp*0.09, 'k--', alpha=0.6, label='Palm Structure')
+    membrane_line, = ax.plot(x, u_sol[:,0], 'b-', lw=2.6, label='Graphene Membrane')
+
+    scatters = []
+    for pos, name, col in zip(finger_pos, finger_names, colors):
+        sc = ax.scatter([pos], [u_tips[finger_pos.index(pos)][0]], 
+                       c=col, s=200, edgecolors='black', linewidth=2, label=name)
+        scatters.append(sc)
+
+    ax.scatter([L*0.65], [0], c='black', s=300, marker='o', label='Target Object')
+
+    ax.set_ylim(-7, 7)
+    ax.set_xlabel('Position along Hand (nm)')
+    ax.set_ylabel('Displacement (nm)')
+    ax.set_title('Physical AI 5-Finger Full Hand with Grasp Motion')
+    ax.legend(loc='upper right', ncol=3)
+    ax.grid(True)
+
+    def animate(i):
+        membrane_line.set_ydata(u_sol[:, i])
+        for j, sc in enumerate(scatters):
+            sc.set_offsets([[finger_pos[j], u_tips[j][i]]])
+        ax.set_title(f'5-Finger Hand @ t = {t_eval[i]:.2f} ns | Grasp Coordination')
+        return [membrane_line] + scatters
+
+    ani = animation.FuncAnimation(fig, animate, frames=range(0, len(t_eval), 4),
+                                  interval=35, blit=False, repeat=True)
+    plt.show()
+
+    # Results
+    print("\n=== 5-Finger Hand Performance ===")
+    for name, tip in zip(finger_names, u_tips):
+        print(f"{name:8s} → Max Displacement: {np.max(np.abs(tip)):.3f} nm")
