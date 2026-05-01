@@ -1,0 +1,67 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.integrate import solve_bvp
+
+# ============== 파라미터 ==============
+L = 2000.0          # Confinement 영역 길이 (nm)
+h_water = 450.0     # nm
+Ef = 0.6            # eV
+N_layer = 5
+wavelength = 1550.0 # 가정 (nm), 필요시 변경
+k0 = 2 * np.pi / wavelength
+
+# Effective parameters (graphene 5-layer + hBN)
+D_eff = 1.5e-18 * N_layer**2.5      # bending stiffness (Nm), approximate
+T_eff = 0.5                         # tension (N/m), gate tunable
+sigma_NL = 1e-3                     # nonlinear conductivity scale (arb. unit)
+
+# Serpentine curvature
+def serpentine(X, curv_factor=0.015):
+    return 2.5 * np.sin(curv_factor * X) * np.exp(X / 15)
+
+# Grid
+x = np.linspace(0, L, 500)
+dx = x[1] - x[0]
+
+# Phase-singular Gaussian confinement (손가락 tip 위치 가정: x≈ L/2)
+x_tip = L * 0.55
+Y_serp = serpentine(x)
+envelope = np.exp( - (x - x_tip)**2 / (1.5**2) )   # Gaussian width 1.5 (scaled)
+
+# Phase gradient force (주요 driving force)
+phase_grad = k0 * 1.8 * np.ones_like(x)           # effective index ≈1.8 (graphene+hBN+water)
+F_opt = sigma_NL * envelope * phase_grad           # simplified force density
+
+# ============== Euler-Bernoulli + tension (BVP) ==============
+def ode_fun(x, y):
+    # y = [u, u', u'', u''']
+    return np.vstack((y[1], y[2], y[3], (F_opt_interp(x) + T_eff * y[2]) / D_eff ))
+
+def bc(ya, yb):
+    return np.array([ya[0], ya[1], yb[0], yb[1]])   # clamped both ends
+
+# Interpolation for force
+from scipy.interpolate import interp1d
+F_opt_interp = interp1d(x, F_opt, kind='cubic')
+
+# Solve BVP
+sol = solve_bvp(ode_fun, bc, x, np.zeros((4, x.size)), tol=1e-6, max_nodes=10000)
+
+u = sol.sol(x)[0]          # deflection (nm scale로 변환 필요)
+
+# ============== 결과 출력 ==============
+u_max = np.max(np.abs(u)) * 1e9   # nm 단위로 변환 (scale factor 조정 필요)
+print(f"최대 fine displacement u_max ≈ {u_max:.4f} nm")
+print(f"손가락 tip 위치 ({x_tip:.0f} nm)에서의 displacement: {sol.sol(x_tip)[0]*1e9:.4f} nm")
+
+# Plot
+plt.figure(figsize=(10,6))
+plt.plot(x, u*1e9, 'b-', label='Graphene membrane deflection (nm)')
+plt.plot(x, Y_serp*0.1, 'r--', label='Serpentine base ×0.1')
+plt.axvline(x_tip, color='orange', linestyle=':', label='Finger tip (phase singularity)')
+plt.xlabel('Position along confinement (nm)')
+plt.ylabel('Out-of-plane displacement (nm)')
+plt.title('Physical AI Finger Fine Motion in Confinement')
+plt.legend()
+plt.grid(True)
+plt.show()
