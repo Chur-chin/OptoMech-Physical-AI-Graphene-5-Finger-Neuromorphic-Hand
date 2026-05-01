@@ -1,0 +1,46 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+# 1. Physical Parameters (Based on Graphene/hBN Research)[cite: 1, 2]
+E_graphene = 1e12      # Young's modulus (Pa)
+thickness = 0.34e-9    # Graphene thickness (m)
+L = 1e-6               # Membrane length (1 um)
+sigma_nl = 1.2         # Nonlinear coefficient
+v_g_min = 1e6          # Minimum group velocity at singularity
+
+# 2. Singularity Phase Gradient Model[cite: 2]
+t = np.linspace(-5e-12, 5e-12, 1000) # 10ps window
+# Phase singularity at t=0 (Delta-like phase gradient)
+phase_gradient = np.exp(-(t**2) / (2 * (0.5e-13)**2)) 
+
+# 3. Phase-to-Mechanical Force Conversion[cite: 2]
+# Local force is proportional to the gradient of optical intensity and phase
+optical_force = sigma_nl * phase_gradient * 1e-3 # Scale factor for radiation pressure
+
+# 4. Mechanical Displacement (Euler-Bernoulli Approximation)
+# Displacement u(z) for a point load at center: u = (F * L^3) / (192 * E * I)
+I = (L * thickness**3) / 12  # Moment of inertia
+u_displacement = (optical_force * L**3) / (192 * E_graphene * I)
+
+# 5. Efficiency Calculation (eta = Mechanical Energy / Optical Energy)[cite: 2]
+energy_opt = np.trapz(optical_force, t)
+energy_mech = 0.5 * (E_graphene * I / L**3) * np.max(u_displacement)**2
+efficiency = (energy_mech / energy_opt) if energy_opt != 0 else 0
+
+# 6. Visualization
+plt.figure(figsize=(10, 5))
+plt.subplot(1, 2, 1)
+plt.plot(t * 1e12, phase_gradient, label='Phase Singularity ($\nabla \phi$)')
+plt.title('Singularity Trajectory[cite: 2]')
+plt.xlabel('Time (ps)')
+plt.legend()
+
+plt.subplot(1, 2, 2)
+plt.plot(t * 1e12, u_displacement * 1e12, color='orange', label='Deflection (pm)')
+plt.title(f'Fine Motion: $\eta_{{conv}}$ = {efficiency:.2e}')
+plt.xlabel('Time (ps)')
+plt.ylabel('Displacement (pm)')
+plt.legend()
+
+plt.tight_layout()
+plt.show()
