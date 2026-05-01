@@ -1,0 +1,161 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.integrate import solve_ivp
+from scipy.signal import find_peaks
+import matplotlib.animation as animation
+from mpl_toolkits.mplot3d import Axes3D
+from tqdm import tqdm
+
+# ========================== Physical AI 파라미터 ==========================
+L = 2000.0
+curv_factor = 2.35
+k_DNA = 5.0
+k_Graphene = 8.0
+k_total = k_DNA + k_Graphene
+Gamma_m = 0.12
+M_eff = 0.35
+x_tip = L * 0.58
+Nx = 150
+
+x = np.linspace(0, L, Nx)
+
+def serpentine(X):
+    return 2.5 * np.sin(curv_factor * X) * np.exp(X / 15)
+
+Y_serp = serpentine(x)
+envelope = np.exp( - (x - x_tip)**2 / (2.5**2) )
+F_base = envelope * 8.0
+
+def run_simulation(I_opt, freq_mod=1.2, t_max=40):
+    F_opt = (I_opt / 25000) * F_base
+    
+    def dynamics(t, y):
+        u = y[:Nx]
+        v = y[Nx:]
+        mod = (1 + 0.65 * np.sin(2*np.pi*freq_mod*t)) * np.exp(-0.008*t)
+        F_drive = F_opt * mod
+        a = (F_drive - Gamma_m * v - k_total * u) / M_eff
+        a[0] = a[-1] = 0
+        v[0] = v[-1] = 0
+        return np.concatenate([v, a])
+
+    y0 = np.zeros(2*Nx)
+    t_eval = np.linspace(0, t_max, 800)
+    sol = solve_ivp(dynamics, (0, t_max), y0, t_eval=t_eval, method='LSODA', rtol=1e-5)
+    u_sol = sol.y[:Nx, :]
+    return t_eval, u_sol, sol.success
+
+# ====================== 1. Frequency Sweep (Resonance 찾기) ======================
+print("🔍 Frequency Sweep로 Resonance 탐색 중...")
+frequencies = np.linspace(0.1, 5.0, 40)
+u_max_list = []
+
+for f in tqdm(frequencies):
+    _, u_sol, _ = run_simulation(I_opt=25e3, freq_mod=f, t_max=30)
+    u_max_list.append(np.max(np.abs(u_sol)))
+
+u_max_list = np.array(u_max_list)
+resonance_idx = np.argmax(u_max_list)
+res_freq = frequencies[resonance_idx]
+print(f"🎯 발견된 Resonance Frequency: {res_freq:.3f} GHz")
+print(f"최대 u_max: {u_max_list[resonance_idx]:.4f} nm")
+
+# Plot
+plt.figure(figsize=(10,6))
+plt.plot(frequencies, u_max_list, 'b-o', linewidth=2)
+plt.axvline(res_freq, color='red', linestyle='--', label=f'Resonance at {res_freq:.3f} GHz')
+plt.xlabel('Modulation Frequency (GHz)')
+plt.ylabel('Maximum Displacement u_max (nm)')
+plt.title('Physical AI Finger - Frequency Sweep (Resonance)')
+plt.legend()
+plt.grid(True)
+plt.show()
+
+# ====================== 2. Power vs u_max Sweep ======================
+print("\n⚡ Power Sweep (u_max vs Intensity) 수행 중...")
+powers = np.logspace(1, 2, 15) * 1000   # 10kW/cm² ~ 100kW/cm²
+u_max_power = []
+
+for p in tqdm(powers):
+    _, u_sol, _ = run_simulation(I_opt=p, freq_mod=res_freq, t_max=25)
+    u_max_power.append(np.max(np.abs(u_sol)))
+
+plt.figure(figsize=(10,6))
+plt.loglog(powers/1000, u_max_power, 'r-s', linewidth=2, markersize=6)
+plt.xlabel('Optical Intensity (kW/cm²)')
+plt.ylabel('Maximum Displacement u_max (nm)')
+plt.title('Power vs u_max Sweep (Linearity 확인)')
+plt.grid(True)
+plt.show()
+
+# ====================== 3. 3D Visualization ======================
+print("\n🌀 3D Visualization 생성...")
+t_eval, u_sol, _ = run_simulation(I_opt=25e3, freq_mod=res_freq, t_max=25)
+X, T = np.meshgrid(x, t_eval)
+U = u_sol.T
+
+fig = plt.figure(figsize=(12, 8))
+ax = fig.add_subplot(111, projection='3d')
+surf = ax.plot_surface(X, T, U, cmap='viridis', alpha=0.8)
+ax.set_xlabel('Position (nm)')
+ax.set_ylabel('Time (ns)')
+ax.set_zlabel('Displacement (nm)')
+ax.set_title('Physical AI Finger 3D Dynamic Motion')
+fig.colorbar(surf, ax=ax, shrink=0.5, aspect=5)
+plt.show()
+
+# ====================== 4. Self-learning PID-like Feedback Loop ======================
+print("\n🧠 Self-learning PID Feedback Loop 시뮬레이션...")
+
+# 목표 displacement (예: 2.0 nm)
+target_u = 2.0
+Kp, Ki, Kd = 0.8, 0.15, 0.05   # PID 게인 (튜닝 가능)
+integral = 0
+prev_error = 0
+I_history = []
+u_tip_history = []
+
+t_max = 50
+t_eval = np.linspace(0, t_max, 1000)
+dt = t_eval[1] - t_eval[0]
+
+u_tip = np.zeros_like(t_eval)
+I_opt_control = np.ones_like(t_eval) * 15e3   # 초기 intensity
+
+for i in range(1, len(t_eval)):
+    # 현재 tip displacement (모델 근사)
+    current_u = u_tip[i-1]
+    error = target_u - current_u
+    
+    integral += error * dt
+    derivative = (error - prev_error) / dt
+    prev_error = error
+    
+    # PID 제어 (intensity 조절)
+    control = Kp * error + Ki * integral + Kd * derivative
+    I_opt_control[i] = np.clip(15e3 + control * 8000, 5e3, 60e3)
+    
+    # Dynamics 근사 (PID 적용 후)
+    u_tip[i] = current_u + (I_opt_control[i]/25000 * 0.12 - 0.08 * current_u) * dt * 8
+
+u_tip_history = u_tip
+
+plt.figure(figsize=(11,7))
+plt.subplot(2,1,1)
+plt.plot(t_eval, u_tip, 'b-', label='Finger Tip Displacement')
+plt.axhline(target_u, color='red', linestyle='--', label='Target (2.0 nm)')
+plt.ylabel('Displacement (nm)')
+plt.title('Self-learning PID Feedback Control')
+plt.legend()
+plt.grid(True)
+
+plt.subplot(2,1,2)
+plt.plot(t_eval, I_opt_control/1000, 'g-', label='Controlled Optical Intensity')
+plt.xlabel('Time (ns)')
+plt.ylabel('Intensity (kW/cm²)')
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+print(f"PID 제어 완료 - 최종 steady-state u ≈ {u_tip[-1]:.3f} nm (Target: {target_u} nm)")
